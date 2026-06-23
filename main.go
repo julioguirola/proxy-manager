@@ -148,7 +148,6 @@ func main() {
 	}
 
 	a := app.New()
-	a.SetIcon(resourceIconPng)
 	w := a.NewWindow("Configurador de Proxy")
 
 	userEntry := widget.NewEntry()
