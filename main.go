@@ -1,10 +1,12 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -116,6 +118,9 @@ func runHelper(proxyconfig *ProxyConfig, file_path string, enable bool, needAuth
 	change_proxy_config(proxyconfig, file_path, enable)
 }
 
+//go:embed picture.png
+var appIcon []byte
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-apply" {
 		var pc ProxyConfig
@@ -147,8 +152,11 @@ func main() {
 		return
 	}
 
-	a := app.New()
+	a := app.NewWithID("proxy-manager")
+	iconRes := fyne.NewStaticResource("logo", appIcon)
+	a.SetIcon(iconRes)
 	w := a.NewWindow("Configurador de Proxy")
+	w.SetIcon(iconRes)
 
 	userEntry := widget.NewEntry()
 	userEntry.SetPlaceHolder("ej: usuario")
@@ -188,7 +196,7 @@ func main() {
 
 		enable := enableRadio.Selected == "Habilitar"
 
-		targets := []string{}
+		var targets []string
 		switch fileRadio.Selected {
 		case "Ambos":
 			targets = []string{Bashrc, EtcEnv}
@@ -198,13 +206,7 @@ func main() {
 			targets = []string{EtcEnv}
 		}
 
-		needsAuth := false
-		for _, f := range targets {
-			if f == EtcEnv {
-				needsAuth = true
-				break
-			}
-		}
+		needsAuth := slices.Contains(targets, EtcEnv)
 
 		if needsAuth {
 			for _, f := range targets {
