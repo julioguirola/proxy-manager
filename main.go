@@ -3,7 +3,18 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 )
 
 type ProxyConfig struct {
@@ -78,9 +89,164 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 	}
 }
 
+func runHelper(proxyconfig *ProxyConfig, file_path string, enable bool, needAuth bool) {
+	if needAuth {
+		userLine := fmt.Sprintf("-user=%s", proxyconfig.user)
+		passLine := fmt.Sprintf("-pass=%s", proxyconfig.pass)
+		urlLine := fmt.Sprintf("-url=%s", proxyconfig.url)
+		portLine := fmt.Sprintf("-port=%d", proxyconfig.port)
+		noProxyLine := fmt.Sprintf("-noproxy=%s", proxyconfig.No_proxy)
+		fileLine := fmt.Sprintf("-file=%s", file_path)
+		enableStr := "true"
+		if !enable {
+			enableStr = "false"
+		}
+		enableLine := fmt.Sprintf("-enable=%s", enableStr)
+
+		selfPath, _ := filepath.Abs(os.Args[0])
+		cmd := exec.Command("pkexec", selfPath, "-apply",
+			userLine, passLine, urlLine, portLine, noProxyLine, fileLine, enableLine)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			panic(err)
+		}
+		return
+	}
+	change_proxy_config(proxyconfig, file_path, enable)
+}
+
 func main() {
-	// proxy := ProxyConfig{user: "julioa", pass: "12", url: "12.18.1.9", port: 38}
-	//
-	// change_proxy_config(&proxy, Bashrc, false)
-	// change_proxy_config(&proxy, EtcEnv, false)
+	if len(os.Args) > 1 && os.Args[1] == "-apply" {
+		var pc ProxyConfig
+		var filePath string
+		enable := true
+		for _, arg := range os.Args[2:] {
+			parts := strings.SplitN(arg, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			switch parts[0] {
+			case "-user":
+				pc.user = parts[1]
+			case "-pass":
+				pc.pass = parts[1]
+			case "-url":
+				pc.url = parts[1]
+			case "-port":
+				pc.port, _ = strconv.Atoi(parts[1])
+			case "-noproxy":
+				pc.No_proxy = parts[1]
+			case "-file":
+				filePath = parts[1]
+			case "-enable":
+				enable = parts[1] == "true"
+			}
+		}
+		change_proxy_config(&pc, filePath, enable)
+		return
+	}
+
+	a := app.New()
+	a.SetIcon(resourceIconPng)
+	w := a.NewWindow("Configurador de Proxy")
+
+	userEntry := widget.NewEntry()
+	userEntry.SetPlaceHolder("ej: usuario")
+
+	passEntry := widget.NewPasswordEntry()
+	passEntry.SetPlaceHolder("ej: contraseña")
+
+	urlEntry := widget.NewEntry()
+	urlEntry.SetPlaceHolder("ej: proxy.miempresa.com")
+
+	portEntry := widget.NewEntry()
+	portEntry.SetPlaceHolder("ej: 8080")
+
+	noProxyEntry := widget.NewEntry()
+	noProxyEntry.SetPlaceHolder("ej: localhost,127.0.0.1,.local")
+
+	fileRadio := widget.NewRadioGroup([]string{"Bashrc", "/etc/environment", "Ambos"}, func(s string) {})
+	fileRadio.SetSelected("Bashrc")
+
+	enableRadio := widget.NewRadioGroup([]string{"Habilitar", "Deshabilitar"}, func(s string) {})
+	enableRadio.SetSelected("Habilitar")
+
+	applyBtn := widget.NewButtonWithIcon("Aplicar", theme.ConfirmIcon(), func() {
+		port, err := strconv.Atoi(portEntry.Text)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("puerto inválido: debe ser un número"), w)
+			return
+		}
+
+		pc := &ProxyConfig{
+			user:     userEntry.Text,
+			pass:     passEntry.Text,
+			url:      urlEntry.Text,
+			port:     port,
+			No_proxy: noProxyEntry.Text,
+		}
+
+		enable := enableRadio.Selected == "Habilitar"
+
+		targets := []string{}
+		switch fileRadio.Selected {
+		case "Ambos":
+			targets = []string{Bashrc, EtcEnv}
+		case "Bashrc":
+			targets = []string{Bashrc}
+		default:
+			targets = []string{EtcEnv}
+		}
+
+		needsAuth := false
+		for _, f := range targets {
+			if f == EtcEnv {
+				needsAuth = true
+				break
+			}
+		}
+
+		if needsAuth {
+			for _, f := range targets {
+				runHelper(pc, f, enable, f == EtcEnv)
+			}
+		} else {
+			for _, f := range targets {
+				change_proxy_config(pc, f, enable)
+			}
+		}
+
+		accion := "habilitado"
+		if !enable {
+			accion = "deshabilitado"
+		}
+		dialog.ShowInformation("Éxito", fmt.Sprintf("Proxy %s correctamente en %s", accion, fileRadio.Selected), w)
+	})
+
+	form := &widget.Form{
+		Items: []*widget.FormItem{
+			{Text: "Usuario", Widget: userEntry},
+			{Text: "Contraseña", Widget: passEntry},
+			{Text: "URL del Proxy", Widget: urlEntry},
+			{Text: "Puerto", Widget: portEntry},
+			{Text: "No Proxy", Widget: noProxyEntry},
+		},
+		SubmitText: "",
+	}
+
+	content := container.NewVBox(
+		widget.NewLabelWithStyle("Configuración de Proxy", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		form,
+		widget.NewSeparator(),
+		widget.NewLabel("Archivo destino:"),
+		fileRadio,
+		widget.NewLabel("Acción:"),
+		enableRadio,
+		container.NewHBox(layout.NewSpacer(), applyBtn, layout.NewSpacer()),
+	)
+
+	w.SetContent(content)
+	w.Resize(fyne.NewSize(480, 520))
+	w.ShowAndRun()
 }
