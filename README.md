@@ -11,7 +11,7 @@ Aplicación GUI escrita en Go con [Fyne](https://fyne.io/) para configurar el pr
 
 ## Captura
 
-![Screenshot](picture.png)
+![Screenshot](captura.png)
 
 ## Uso
 
