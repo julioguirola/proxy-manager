@@ -152,6 +152,10 @@ func main() {
 		return
 	}
 
+	err := os.Setenv("DESKTOP_APP_ID", "proxy-manager")
+	if err != nil {
+		println(err.Error())
+	}
 	a := app.NewWithID("proxy-manager")
 	iconRes := fyne.NewStaticResource("logo", appIcon)
 	a.SetIcon(iconRes)
