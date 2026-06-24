@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,9 +30,9 @@ type ProxyConfig struct {
 }
 
 const (
-	EtcEnv    = "/etc/environment"
-	Bashrc    = "/home/julio/.bashrc"
-	HistFile  = "/home/julio/.proxy-manager-history.json"
+	EtcEnv   = "/etc/environment"
+	Bashrc   = "/home/julio/.bashrc"
+	HistFile = "/home/julio/.proxy-manager-history.json"
 )
 
 type HistoryEntry struct {
@@ -230,6 +229,84 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 	}
 }
 
+func ensureProxyVarsExist() {
+	files := []string{Bashrc, EtcEnv}
+
+	for _, filePath := range files {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+
+		hasHttpProxy := false
+		hasHttpsProxy := false
+		hasNoProxy := false
+
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			cleanLine := strings.TrimPrefix(trimmed, "export ")
+			if strings.HasPrefix(cleanLine, "http_proxy=") || strings.HasPrefix(cleanLine, "https_proxy=") || strings.HasPrefix(cleanLine, "no_proxy=") {
+				if strings.HasPrefix(cleanLine, "http_proxy=") {
+					hasHttpProxy = true
+				}
+				if strings.HasPrefix(cleanLine, "https_proxy=") {
+					hasHttpsProxy = true
+				}
+				if strings.HasPrefix(cleanLine, "no_proxy=") {
+					hasNoProxy = true
+				}
+			}
+		}
+
+		var newLines []string
+		if !hasHttpProxy {
+			if filePath == Bashrc {
+				newLines = append(newLines, "# export http_proxy=\"\"")
+			} else {
+				newLines = append(newLines, "# http_proxy=\"\"")
+			}
+		}
+		if !hasHttpsProxy {
+			if filePath == Bashrc {
+				newLines = append(newLines, "# export https_proxy=\"\"")
+			} else {
+				newLines = append(newLines, "# https_proxy=\"\"")
+			}
+		}
+		if !hasNoProxy {
+			if filePath == Bashrc {
+				newLines = append(newLines, "# export no_proxy=\"\"")
+			} else {
+				newLines = append(newLines, "# no_proxy=\"\"")
+			}
+		}
+
+		if len(newLines) > 0 {
+			newContent := strings.Join(lines, "\n")
+			if !strings.HasSuffix(newContent, "\n") {
+				newContent += "\n"
+			}
+			newContent += strings.Join(newLines, "\n") + "\n"
+
+			if filePath == EtcEnv {
+				tmpFile := filePath + ".tmp"
+				err := os.WriteFile(tmpFile, []byte(newContent), 0644)
+				if err != nil {
+					continue
+				}
+				cmd := exec.Command("pkexec", "cp", tmpFile, filePath)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				cmd.Run()
+				os.Remove(tmpFile)
+			} else {
+				os.WriteFile(filePath, []byte(newContent), 0644)
+			}
+		}
+	}
+}
+
 func runHelper(proxyconfig *ProxyConfig, file_path string, enable bool, needAuth bool) {
 	if needAuth {
 		userLine := fmt.Sprintf("-user=%s", proxyconfig.user)
@@ -319,17 +396,19 @@ func main() {
 	noProxyEntry := widget.NewEntry()
 	noProxyEntry.SetPlaceHolder("ej: localhost,127.0.0.1,.local")
 
-	fileRadio := widget.NewRadioGroup([]string{"Bashrc", "/etc/environment", "Ambos"}, func(s string) {})
-	fileRadio.SetSelected("Bashrc")
-
 	enableRadio := widget.NewRadioGroup([]string{"Habilitar", "Deshabilitar"}, func(s string) {})
 	enableRadio.SetSelected("Habilitar")
+
+	// Asegurar que las variables de proxy existan en los archivos
+	ensureProxyVarsExist()
 
 	// Detectar proxies activos al iniciar
 	pcBash, activeBash := parseConfigFromFile(Bashrc)
 	pcEtc, activeEtc := parseConfigFromFile(EtcEnv)
 
-	if activeBash || activeEtc {
+	isEnabled := activeBash || activeEtc
+
+	if isEnabled {
 		var targetPC *ProxyConfig
 		if activeBash {
 			targetPC = pcBash
@@ -342,21 +421,20 @@ func main() {
 		urlEntry.SetText(targetPC.url)
 		portEntry.SetText(strconv.Itoa(targetPC.port))
 		noProxyEntry.SetText(targetPC.No_proxy)
-		enableRadio.SetSelected("Habilitar")
-
-		if activeBash && activeEtc {
-			fileRadio.SetSelected("Ambos")
-		} else if activeBash {
-			fileRadio.SetSelected("Bashrc")
-		} else {
-			fileRadio.SetSelected("/etc/environment")
-		}
 	} else {
-		enableRadio.SetSelected("Deshabilitar")
 		portEntry.SetText("3128")
 	}
 
-	applyBtn := widget.NewButtonWithIcon("Aplicar", theme.ConfirmIcon(), func() {
+	// Indicador de estado
+	statusLabel := widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	if isEnabled {
+		statusLabel.SetText("● Proxy Activo")
+	} else {
+		statusLabel.SetText("○ Proxy Desactivado")
+	}
+
+	// Botón toggle para activar/desactivar
+	toggleBtn := widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() {
 		port, err := strconv.Atoi(portEntry.Text)
 		if err != nil {
 			dialog.ShowError(fmt.Errorf("puerto inválido: debe ser un número"), w)
@@ -371,36 +449,28 @@ func main() {
 			No_proxy: noProxyEntry.Text,
 		}
 
-		enable := enableRadio.Selected == "Habilitar"
+		// Siempre aplicar a ambos archivos
+		targets := []string{Bashrc, EtcEnv}
+		enable := !isEnabled
 
-		var targets []string
-		switch fileRadio.Selected {
-		case "Ambos":
-			targets = []string{Bashrc, EtcEnv}
-		case "Bashrc":
-			targets = []string{Bashrc}
-		default:
-			targets = []string{EtcEnv}
+		for _, f := range targets {
+			runHelper(pc, f, enable, f == EtcEnv)
 		}
 
-		needsAuth := slices.Contains(targets, EtcEnv)
-
-		if needsAuth {
-			for _, f := range targets {
-				runHelper(pc, f, enable, f == EtcEnv)
-			}
+		if enable {
+			dialog.ShowInformation("Éxito", "Proxy habilitado correctamente", w)
 		} else {
-			for _, f := range targets {
-				change_proxy_config(pc, f, enable)
-			}
+			dialog.ShowInformation("Éxito", "Proxy deshabilitado correctamente", w)
 		}
-
-		accion := "habilitado"
-		if !enable {
-			accion = "deshabilitado"
-		}
-		dialog.ShowInformation("Éxito", fmt.Sprintf("Proxy %s correctamente en %s", accion, fileRadio.Selected), w)
 	})
+
+	if isEnabled {
+		toggleBtn.SetText("Desactivar")
+		toggleBtn.Importance = widget.DangerImportance
+	} else {
+		toggleBtn.SetText("Activar")
+		toggleBtn.Importance = widget.SuccessImportance
+	}
 
 	// Botón para guardar en el almacén
 	saveBtn := widget.NewButtonWithIcon("Guardar Config", theme.DocumentSaveIcon(), func() {
@@ -410,11 +480,6 @@ func main() {
 			return
 		}
 
-		actionStr := "Habilitar"
-		if enableRadio.Selected == "Deshabilitar" {
-			actionStr = "Deshabilitar"
-		}
-
 		entry := HistoryEntry{
 			Timestamp: time.Now().Format(time.RFC3339),
 			User:      userEntry.Text,
@@ -422,8 +487,6 @@ func main() {
 			Url:       urlEntry.Text,
 			Port:      port,
 			NoProxy:   noProxyEntry.Text,
-			Action:    actionStr,
-			Files:     fileRadio.Selected,
 		}
 		if err := addHistoryEntry(entry); err != nil {
 			dialog.ShowError(fmt.Errorf("error guardando configuración: %v", err), w)
@@ -480,18 +543,6 @@ func main() {
 		urlEntry.SetText(entry.Url)
 		portEntry.SetText(strconv.Itoa(entry.Port))
 		noProxyEntry.SetText(entry.NoProxy)
-		if entry.Action == "Habilitar" {
-			enableRadio.SetSelected("Habilitar")
-		} else {
-			enableRadio.SetSelected("Deshabilitar")
-		}
-		if entry.Files == "Bashrc" {
-			fileRadio.SetSelected("Bashrc")
-		} else if entry.Files == "Ambos" {
-			fileRadio.SetSelected("Ambos")
-		} else {
-			fileRadio.SetSelected("/etc/environment")
-		}
 	}
 
 	form := &widget.Form{
@@ -511,15 +562,15 @@ func main() {
 		historyList,
 	)
 
-	formContent := container.NewVBox(
-		widget.NewLabelWithStyle("Configuración de Proxy", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		form,
-		widget.NewSeparator(),
-		widget.NewLabel("Archivo destino:"),
-		fileRadio,
-		widget.NewLabel("Acción:"),
-		enableRadio,
-		container.NewHBox(layout.NewSpacer(), saveBtn, applyBtn, layout.NewSpacer()),
+	formContent := container.NewBorder(
+		container.NewVBox(
+			widget.NewLabelWithStyle("Configuración de Proxy", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			statusLabel,
+			form,
+			widget.NewSeparator(),
+		),
+		container.NewHBox(layout.NewSpacer(), saveBtn, toggleBtn, layout.NewSpacer()),
+		nil, nil,
 	)
 
 	split := container.NewHSplit(historyContent, formContent)
