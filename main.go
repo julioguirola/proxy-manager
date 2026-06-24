@@ -116,6 +116,51 @@ func addHistoryEntry(entry HistoryEntry) error {
 	return saveHistory(hist)
 }
 
+func isProxyEnabled() bool {
+	files := []string{Bashrc, EtcEnv}
+	bothEnabled := true
+
+	for _, filePath := range files {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			bothEnabled = false
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+
+		fileHasEnabled := false
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+
+			// Skip fully commented lines
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+
+			// Remove export prefix for bashrc
+			cleanLine := strings.TrimPrefix(trimmed, "export ")
+
+			// Check if http_proxy or https_proxy is uncommented
+			if strings.HasPrefix(cleanLine, "http_proxy=") || strings.HasPrefix(cleanLine, "https_proxy=") {
+				parts := strings.SplitN(cleanLine, "=", 2)
+				if len(parts) == 2 && parts[1] != "" {
+					fileHasEnabled = true
+					break
+				}
+			}
+		}
+
+		if !fileHasEnabled {
+			bothEnabled = false
+		}
+	}
+
+	return bothEnabled
+}
+
 func parseConfigFromFile(filePath string) (*ProxyConfig, bool) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -402,13 +447,14 @@ func main() {
 	// Asegurar que las variables de proxy existan en los archivos
 	ensureProxyVarsExist()
 
+	// Verificar si el proxy está habilitado
+	isEnabled := isProxyEnabled()
+
 	// Detectar proxies activos al iniciar
 	pcBash, activeBash := parseConfigFromFile(Bashrc)
 	pcEtc, activeEtc := parseConfigFromFile(EtcEnv)
 
-	isEnabled := activeBash || activeEtc
-
-	if isEnabled {
+	if activeBash || activeEtc {
 		var targetPC *ProxyConfig
 		if activeBash {
 			targetPC = pcBash
@@ -434,7 +480,8 @@ func main() {
 	}
 
 	// Botón toggle para activar/desactivar
-	toggleBtn := widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() {
+	var toggleBtn *widget.Button
+	toggleBtn = widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() {
 		port, err := strconv.Atoi(portEntry.Text)
 		if err != nil {
 			dialog.ShowError(fmt.Errorf("puerto inválido: debe ser un número"), w)
@@ -449,22 +496,33 @@ func main() {
 			No_proxy: noProxyEntry.Text,
 		}
 
+		// Verificar estado actual antes de cambiar
+		currentEnabled := isProxyEnabled()
+
 		// Siempre aplicar a ambos archivos
 		targets := []string{Bashrc, EtcEnv}
-		enable := !isEnabled
+		enable := !currentEnabled
 
 		for _, f := range targets {
 			runHelper(pc, f, enable, f == EtcEnv)
 		}
 
+		// Actualizar UI después de la acción
 		if enable {
+			statusLabel.SetText("● Proxy Activo")
+			toggleBtn.SetText("Desactivar")
+			toggleBtn.Importance = widget.DangerImportance
 			dialog.ShowInformation("Éxito", "Proxy habilitado correctamente", w)
 		} else {
+			statusLabel.SetText("○ Proxy Desactivado")
+			toggleBtn.SetText("Activar")
+			toggleBtn.Importance = widget.SuccessImportance
 			dialog.ShowInformation("Éxito", "Proxy deshabilitado correctamente", w)
 		}
 	})
 
-	if isEnabled {
+	// Actualizar estado del botón según proxy actual
+	if isProxyEnabled() {
 		toggleBtn.SetText("Desactivar")
 		toggleBtn.Importance = widget.DangerImportance
 	} else {
