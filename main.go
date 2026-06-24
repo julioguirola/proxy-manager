@@ -30,9 +30,28 @@ type ProxyConfig struct {
 }
 
 const (
-	EtcEnv   = "/etc/environment"
-	Bashrc   = "/home/julio/.bashrc"
-	HistFile = "/home/julio/.proxy-manager-history.json"
+	EtcEnv = "/etc/environment"
+)
+
+func getShellConfigPath() string {
+	shell := os.Getenv("SHELL")
+	home := os.Getenv("HOME")
+
+	switch {
+	case strings.Contains(shell, "bash"):
+		return filepath.Join(home, ".bashrc")
+	case strings.Contains(shell, "zsh"):
+		return filepath.Join(home, ".zshrc")
+	case strings.Contains(shell, "fish"):
+		return filepath.Join(home, ".config/fish/config.fish")
+	default:
+		return filepath.Join(home, ".bashrc")
+	}
+}
+
+var (
+	TermConfigFile = getShellConfigPath()
+	HistFile       = fmt.Sprintf("/home/%s/.proxy-manager-history.json", os.Getenv("USER"))
 )
 
 type HistoryEntry struct {
@@ -117,7 +136,7 @@ func addHistoryEntry(entry HistoryEntry) error {
 }
 
 func isProxyEnabled() bool {
-	files := []string{Bashrc, EtcEnv}
+	files := []string{TermConfigFile, EtcEnv}
 	bothEnabled := true
 
 	for _, filePath := range files {
@@ -234,7 +253,7 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 	https_proxy := "https_proxy="
 	no_proxy := "no_proxy="
 
-	if file_path == Bashrc {
+	if file_path == TermConfigFile {
 		http_proxy = fmt.Sprintf("%s%s", "export ", http_proxy)
 		https_proxy = fmt.Sprintf("%s%s", "export ", https_proxy)
 		no_proxy = fmt.Sprintf("%s%s", "export ", no_proxy)
@@ -275,7 +294,7 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 }
 
 func ensureProxyVarsExist() {
-	files := []string{Bashrc, EtcEnv}
+	files := []string{TermConfigFile, EtcEnv}
 
 	for _, filePath := range files {
 		data, err := os.ReadFile(filePath)
@@ -306,21 +325,21 @@ func ensureProxyVarsExist() {
 
 		var newLines []string
 		if !hasHttpProxy {
-			if filePath == Bashrc {
+			if filePath == TermConfigFile {
 				newLines = append(newLines, "# export http_proxy=\"\"")
 			} else {
 				newLines = append(newLines, "# http_proxy=\"\"")
 			}
 		}
 		if !hasHttpsProxy {
-			if filePath == Bashrc {
+			if filePath == TermConfigFile {
 				newLines = append(newLines, "# export https_proxy=\"\"")
 			} else {
 				newLines = append(newLines, "# https_proxy=\"\"")
 			}
 		}
 		if !hasNoProxy {
-			if filePath == Bashrc {
+			if filePath == TermConfigFile {
 				newLines = append(newLines, "# export no_proxy=\"\"")
 			} else {
 				newLines = append(newLines, "# no_proxy=\"\"")
@@ -451,7 +470,7 @@ func main() {
 	isEnabled := isProxyEnabled()
 
 	// Detectar proxies activos al iniciar
-	pcBash, activeBash := parseConfigFromFile(Bashrc)
+	pcBash, activeBash := parseConfigFromFile(TermConfigFile)
 	pcEtc, activeEtc := parseConfigFromFile(EtcEnv)
 
 	if activeBash || activeEtc {
@@ -500,7 +519,7 @@ func main() {
 		currentEnabled := isProxyEnabled()
 
 		// Siempre aplicar a ambos archivos
-		targets := []string{Bashrc, EtcEnv}
+		targets := []string{TermConfigFile, EtcEnv}
 		enable := !currentEnabled
 
 		for _, f := range targets {
