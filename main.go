@@ -284,12 +284,12 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 		if strings.Contains(li, "proxy") {
 			lineas[i] = ""
 		}
+	}
 
-		err := os.WriteFile(file_path, []byte(strings.Join(lineas, "\n")), 0644)
+	err = os.WriteFile(file_path, []byte(strings.Join(lineas, "\n")), 0644)
 
-		if err != nil {
-			panic(err)
-		}
+	if err != nil {
+		panic(err)
 	}
 }
 
@@ -309,7 +309,10 @@ func ensureProxyVarsExist() {
 
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			cleanLine := strings.TrimPrefix(trimmed, "export ")
+			// Remove leading '#' and space for commented lines
+			uncommented := strings.TrimPrefix(trimmed, "# ")
+			uncommented = strings.TrimPrefix(uncommented, "#")
+			cleanLine := strings.TrimPrefix(uncommented, "export ")
 			if strings.HasPrefix(cleanLine, "http_proxy=") || strings.HasPrefix(cleanLine, "https_proxy=") || strings.HasPrefix(cleanLine, "no_proxy=") {
 				if strings.HasPrefix(cleanLine, "http_proxy=") {
 					hasHttpProxy = true
