@@ -54,6 +54,11 @@ var (
 	HistFile       = fmt.Sprintf("/home/%s/.proxy-manager-history.json", os.Getenv("USER"))
 )
 
+// proxyTargetFiles son los archivos sobre los que actúa el programa
+// (config del terminal y /etc/environment). Es una variable para poder
+// sobreescribirla en los tests.
+var proxyTargetFiles = []string{TermConfigFile, EtcEnv}
+
 type HistoryEntry struct {
 	Timestamp string `json:"timestamp"`
 	User      string `json:"user"`
@@ -135,8 +140,26 @@ func addHistoryEntry(entry HistoryEntry) error {
 	return saveHistory(hist)
 }
 
+// ProxyVarNames incluye las variables de proxy en minúsculas y en mayúsculas
+var ProxyVarNames = []string{
+	"http_proxy", "HTTP_PROXY",
+	"https_proxy", "HTTPS_PROXY",
+	"no_proxy", "NO_PROXY",
+}
+
+// proxyVarName devuelve el nombre de la variable de proxy que establece la línea
+// (sin el prefijo 'export '), o "" si la línea no define una variable de proxy.
+func proxyVarName(cleanLine string) string {
+	for _, name := range ProxyVarNames {
+		if strings.HasPrefix(cleanLine, name+"=") {
+			return name
+		}
+	}
+	return ""
+}
+
 func isProxyEnabled() bool {
-	files := []string{TermConfigFile, EtcEnv}
+	files := proxyTargetFiles
 	bothEnabled := true
 
 	for _, filePath := range files {
@@ -162,8 +185,9 @@ func isProxyEnabled() bool {
 			// Remove export prefix for bashrc
 			cleanLine := strings.TrimPrefix(trimmed, "export ")
 
-			// Check if http_proxy or https_proxy is uncommented
-			if strings.HasPrefix(cleanLine, "http_proxy=") || strings.HasPrefix(cleanLine, "https_proxy=") {
+			// Check if http_proxy/https_proxy (o sus variantes en mayúsculas) está sin comentar
+			name := proxyVarName(cleanLine)
+			if name == "http_proxy" || name == "https_proxy" || name == "HTTP_PROXY" || name == "HTTPS_PROXY" {
 				parts := strings.SplitN(cleanLine, "=", 2)
 				if len(parts) == 2 && parts[1] != "" {
 					fileHasEnabled = true
@@ -199,13 +223,14 @@ func parseConfigFromFile(filePath string) (*ProxyConfig, bool) {
 		// Quitar prefijo 'export ' si existe (para .bashrc)
 		cleanLine := strings.TrimPrefix(trimmed, "export ")
 
-		if strings.HasPrefix(cleanLine, "http_proxy=") || strings.HasPrefix(cleanLine, "https_proxy=") {
+		switch name := proxyVarName(cleanLine); name {
+		case "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY":
 			parts := strings.SplitN(cleanLine, "=", 2)
 			if len(parts) == 2 {
 				proxyURLStr = strings.Trim(parts[1], `"`)
 				found = true
 			}
-		} else if strings.HasPrefix(cleanLine, "no_proxy=") {
+		case "no_proxy", "NO_PROXY":
 			parts := strings.SplitN(cleanLine, "=", 2)
 			if len(parts) == 2 {
 				noProxyStr = strings.Trim(parts[1], `"`)
@@ -249,16 +274,6 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 	}
 	lineas := strings.Split(string(data), "\n")
 
-	http_proxy := "http_proxy="
-	https_proxy := "https_proxy="
-	no_proxy := "no_proxy="
-
-	if file_path == TermConfigFile {
-		http_proxy = fmt.Sprintf("%s%s", "export ", http_proxy)
-		https_proxy = fmt.Sprintf("%s%s", "export ", https_proxy)
-		no_proxy = fmt.Sprintf("%s%s", "export ", no_proxy)
-	}
-
 	full_url := proxyconfig.FullUrlBuilder()
 	noproxy := proxyconfig.NoProxyBuilder()
 
@@ -269,19 +284,26 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 	}
 
 	for i, li := range lineas {
-		if strings.Contains(li, http_proxy) {
-			lineas[i] = fmt.Sprintf("%s%s%s", comment, http_proxy, full_url)
-			continue
+		matched := false
+		for _, name := range ProxyVarNames {
+			// La línea puede tener o no el prefijo 'export '
+			for _, prefix := range []string{"export " + name + "=", name + "="} {
+				if strings.Contains(li, prefix) {
+					value := full_url
+					if name == "no_proxy" || name == "NO_PROXY" {
+						value = noproxy
+					}
+					lineas[i] = fmt.Sprintf("%s%s%s", comment, prefix, value)
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
 		}
-		if strings.Contains(li, https_proxy) {
-			lineas[i] = fmt.Sprintf("%s%s%s", comment, https_proxy, full_url)
-			continue
-		}
-		if strings.Contains(li, no_proxy) {
-			lineas[i] = fmt.Sprintf("%s%s%s", comment, no_proxy, noproxy)
-			continue
-		}
-		if strings.Contains(li, "proxy") {
+		// Cualquier otra línea relacionada con proxies (en minúsculas o mayúsculas) se elimina
+		if !matched && (strings.Contains(li, "proxy") || strings.Contains(li, "PROXY")) {
 			lineas[i] = ""
 		}
 	}
@@ -294,7 +316,7 @@ func change_proxy_config(proxyconfig *ProxyConfig, file_path string, enable bool
 }
 
 func ensureProxyVarsExist() {
-	files := []string{TermConfigFile, EtcEnv}
+	files := proxyTargetFiles
 
 	for _, filePath := range files {
 		data, err := os.ReadFile(filePath)
@@ -303,9 +325,7 @@ func ensureProxyVarsExist() {
 		}
 		lines := strings.Split(string(data), "\n")
 
-		hasHttpProxy := false
-		hasHttpsProxy := false
-		hasNoProxy := false
+		existing := make(map[string]bool)
 
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
@@ -313,39 +333,21 @@ func ensureProxyVarsExist() {
 			uncommented := strings.TrimPrefix(trimmed, "# ")
 			uncommented = strings.TrimPrefix(uncommented, "#")
 			cleanLine := strings.TrimPrefix(uncommented, "export ")
-			if strings.HasPrefix(cleanLine, "http_proxy=") || strings.HasPrefix(cleanLine, "https_proxy=") || strings.HasPrefix(cleanLine, "no_proxy=") {
-				if strings.HasPrefix(cleanLine, "http_proxy=") {
-					hasHttpProxy = true
-				}
-				if strings.HasPrefix(cleanLine, "https_proxy=") {
-					hasHttpsProxy = true
-				}
-				if strings.HasPrefix(cleanLine, "no_proxy=") {
-					hasNoProxy = true
-				}
+			if name := proxyVarName(cleanLine); name != "" {
+				existing[name] = true
 			}
 		}
 
+		// Añadir stubs comentados para las variables que falten (minúsculas y mayúsculas)
 		var newLines []string
-		if !hasHttpProxy {
-			if filePath == TermConfigFile {
-				newLines = append(newLines, "# export http_proxy=\"\"")
-			} else {
-				newLines = append(newLines, "# http_proxy=\"\"")
+		for _, name := range ProxyVarNames {
+			if existing[name] {
+				continue
 			}
-		}
-		if !hasHttpsProxy {
 			if filePath == TermConfigFile {
-				newLines = append(newLines, "# export https_proxy=\"\"")
+				newLines = append(newLines, fmt.Sprintf("# export %s=\"\"", name))
 			} else {
-				newLines = append(newLines, "# https_proxy=\"\"")
-			}
-		}
-		if !hasNoProxy {
-			if filePath == TermConfigFile {
-				newLines = append(newLines, "# export no_proxy=\"\"")
-			} else {
-				newLines = append(newLines, "# no_proxy=\"\"")
+				newLines = append(newLines, fmt.Sprintf("# %s=\"\"", name))
 			}
 		}
 
@@ -522,7 +524,7 @@ func main() {
 		currentEnabled := isProxyEnabled()
 
 		// Siempre aplicar a ambos archivos
-		targets := []string{TermConfigFile, EtcEnv}
+		targets := proxyTargetFiles
 		enable := !currentEnabled
 
 		for _, f := range targets {
